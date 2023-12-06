@@ -1,39 +1,111 @@
 use std::fmt;
+use std::ops::Range;
 use std::str::Lines;
 
-// -------- SEED INTERVALS ---------
+fn map_ranges(inputs: Vec<Range<u64>>, mapping: &Mapping) -> Vec<Range<u64>> {
+    let mut outputs = Vec::new();
+    let mut inputs = inputs.clone();
 
-#[derive(Debug)]
-struct SeedInterval {
-    start: u64,
-    range: u64,
-}
+    let transforms = &mapping.transforms;
 
-impl PartialEq for SeedInterval {
-    fn eq(&self, other: &Self) -> bool {
-        self.start == other.start && self.range == other.range
+    // println!("Inputs: {:?}", inputs);
+
+    // while pop inputs loop and add to outputs
+    while let Some(input) = inputs.pop() {
+        // println!("Testing input: {:?}", input);
+
+        let transform = transforms.iter().find_map(|transform| {
+            let m = match_ranges(&input, &transform.source);
+
+            match m {
+                None => None,
+                Some(rm) => Some((rm, transform)),
+            }
+        });
+
+        if transform.is_none() {
+            // println!("No transform found for input: {:?}", input);
+            outputs.push(input);
+            continue;
+        }
+
+        let (range_match, transform) = transform.unwrap();
+        // println!(
+        //     "Transform: {} found with range match {:?}",
+        //     transform, range_match
+        // );
+
+        match range_match {
+            RangeMatch::Equals => {
+                outputs.push(transform.dest.clone());
+            }
+            RangeMatch::IsInside => {
+                let start = transform.map_value(input.start);
+                let end = start + (input.end - input.start);
+                outputs.push(start..end);
+            }
+            RangeMatch::IntersectsWith => {
+                if input.start < transform.source.start {
+                    let outside_range = input.start..transform.source.start;
+                    inputs.push(outside_range);
+
+                    let inside_range = transform.source.start..input.end;
+                    let start = transform.map_value(inside_range.start);
+                    let end = start + (inside_range.end - inside_range.start);
+                    outputs.push(start..end);
+                } else {
+                    let inside_range = input.start..transform.source.end;
+                    let start = transform.map_value(inside_range.start);
+                    let end = start + (inside_range.end - inside_range.start);
+                    outputs.push(start..end);
+
+                    let outside_range = transform.source.end..input.end;
+                    inputs.push(outside_range);
+                }
+            }
+            RangeMatch::Spans => {
+                outputs.push(transform.dest.clone());
+
+                let before_range = input.start..transform.source.start;
+                inputs.push(before_range);
+
+                let after_range = transform.source.end..input.end;
+                inputs.push(after_range);
+            }
+        }
     }
+
+    outputs
 }
 
-impl fmt::Display for SeedInterval {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "({},{})", self.start, self.end())
-    }
+#[derive(Debug, PartialEq)]
+enum RangeMatch {
+    Equals,         // A equals B
+    IntersectsWith, // A intersects with B
+    Spans,          // A spans B
+    IsInside,       // A is inside B
 }
 
-impl SeedInterval {
-    fn end(&self) -> u64 {
-        self.start + self.range - 1
+fn match_ranges(a: &Range<u64>, b: &Range<u64>) -> Option<RangeMatch> {
+    if a.start == b.start && a.end == b.end {
+        Some(RangeMatch::Equals)
+    } else if a.start >= b.start && a.end <= b.end {
+        Some(RangeMatch::IsInside)
+    } else if a.start <= b.start && a.end >= b.end {
+        Some(RangeMatch::Spans)
+    } else if (a.start < b.start && a.end > b.start) || (a.start < b.end && a.end > b.end) {
+        Some(RangeMatch::IntersectsWith)
+    } else {
+        None
     }
 }
 
 // -------- TRANSFORMS ---------
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Transform {
-    dest_start: u64,
-    source_start: u64,
-    range: u64,
+    source: Range<u64>,
+    dest: Range<u64>,
 }
 
 impl fmt::Display for Transform {
@@ -41,43 +113,31 @@ impl fmt::Display for Transform {
         write!(
             f,
             "({},{}) -> ({},{})",
-            self.source_start,
-            self.end(),
-            self.dest_start,
-            self.dest_end()
+            self.source.start, self.source.end, self.dest.start, self.dest.end
         )
+    }
+}
+
+impl Transform {
+    fn map_value(&self, value: u64) -> u64 {
+        if self.source.contains(&value) {
+            let offset = value - self.source.start;
+            self.dest.start + offset
+        } else {
+            value
+        }
     }
 }
 
 impl PartialEq for Transform {
     fn eq(&self, other: &Self) -> bool {
-        self.dest_start == other.dest_start
-            && self.source_start == other.source_start
-            && self.range == other.range
-    }
-}
-
-impl Transform {
-    fn transform_value(&self, value: u64) -> u64 {
-        if value < self.source_start || value > self.source_start + self.range {
-            return value;
-        }
-
-        self.dest_start + (value - self.source_start)
-    }
-
-    fn end(&self) -> u64 {
-        self.source_start + self.range - 1
-    }
-
-    fn dest_end(&self) -> u64 {
-        self.dest_start + self.range - 1
+        self.source == other.source && self.dest == other.dest
     }
 }
 
 // -------- Mappings ---------
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Mapping {
     transforms: Vec<Transform>,
 }
@@ -86,94 +146,6 @@ impl PartialEq for Mapping {
     fn eq(&self, other: &Self) -> bool {
         self.transforms == other.transforms
     }
-}
-
-impl Mapping {
-    fn transform_seed_intervals(&self, seed_intervals: Vec<SeedInterval>) -> Vec<SeedInterval> {
-        return vec![];
-    }
-}
-
-// --------- Main ----------
-
-fn transform_seed_interval(seed: SeedInterval, transform: Transform) -> Vec<SeedInterval> {
-    // One seed interval can be transformed into at most 3 seed intervals
-    // one before the transform range, one inside the transform range, and one after the transform range
-
-    // There are 6 cases
-    // 1. Seed interval is before the transform range
-    // 2. Seed interval is inside the transform range
-    // 3. Seed interval is after the transform range
-    // 4. Seed interval starts before the transform range and ends inside the transform range
-    // 5. Seed interval starts inside the transform range and ends after the transform range
-    // 6. Seed interval starts before the transform range and ends after the transform range
-
-    if seed.end() < transform.source_start {
-        // Case 1
-        return vec![SeedInterval {
-            start: seed.start,
-            range: seed.range,
-        }];
-    } else if seed.start >= transform.source_start && seed.end() <= transform.end() {
-        // Case 2
-        return vec![SeedInterval {
-            start: transform.transform_value(seed.start),
-            range: seed.range,
-        }];
-    } else if seed.start > transform.end() {
-        // Case 3
-        return vec![SeedInterval {
-            start: seed.start,
-            range: seed.range,
-        }];
-    } else if seed.start < transform.source_start
-        && seed.end() >= transform.source_start
-        && seed.end() <= transform.end()
-    {
-        // Case 4
-        let before_transform = SeedInterval {
-            start: seed.start,
-            range: transform.source_start - seed.start,
-        };
-        let inside_transform = SeedInterval {
-            start: transform.transform_value(transform.source_start),
-            range: seed.end() - transform.source_start + 1,
-        };
-        return vec![before_transform, inside_transform];
-    } else if seed.start >= transform.source_start
-        && seed.start <= transform.end()
-        && seed.end() > transform.end()
-    {
-        // Case 5
-        let inside_range = transform.end() - seed.start + 1;
-        let inside_transform = SeedInterval {
-            start: transform.transform_value(seed.start),
-            range: inside_range,
-        };
-        let after_transform = SeedInterval {
-            start: seed.start + inside_range,
-            range: seed.range - inside_range,
-        };
-        return vec![inside_transform, after_transform];
-    } else if seed.start < transform.source_start && seed.end() > transform.end() {
-        // Case 6
-        let before_range = transform.source_start - seed.start;
-        let before_transform = SeedInterval {
-            start: seed.start,
-            range: before_range,
-        };
-        let inside_transform = SeedInterval {
-            start: transform.transform_value(transform.source_start),
-            range: transform.range,
-        };
-        let after_transform = SeedInterval {
-            start: seed.start + before_range + transform.range,
-            range: seed.range - transform.range - before_range,
-        };
-        return vec![before_transform, inside_transform, after_transform];
-    }
-
-    panic!("All cases should be captured");
 }
 
 fn main() {
@@ -185,7 +157,7 @@ fn main() {
 fn part2(input: &str) -> u64 {
     let mut lines = input.lines(); // create iterator
 
-    let mut seed_intervals = parse_seeds(&mut lines); // parse seeds
+    let seeds = parse_seeds(&mut lines); // parse seeds
 
     let mut mappings = Vec::new();
 
@@ -211,22 +183,16 @@ fn part2(input: &str) -> u64 {
     lines.next(); // discard humidity-to-location map line
     mappings.push(parse_mapping(&mut lines));
 
-    // mappings.into_iter().for_each(|mapping| {
-    //     println!("{:?}", mapping);
-    // });
-
-    let seed_to_soil = mappings.get(0).expect("Should be a mappings");
-
-    let soil_intervals = seed_to_soil.transform_seed_intervals(seed_intervals);
-
-    soil_intervals
+    mappings
         .iter()
-        .for_each(|soil_interval| println!("{}", soil_interval));
-
-    0
+        .fold(seeds, |seeds, mapping| map_ranges(seeds, &mapping))
+        .iter()
+        .map(|range| range.start)
+        .min()
+        .expect("Should be a minimum")
 }
 
-fn parse_seeds(lines: &mut Lines) -> Vec<SeedInterval> {
+fn parse_seeds(lines: &mut Lines) -> Vec<Range<u64>> {
     let numbers = lines
         .next()
         .expect("Should be a first line")
@@ -236,15 +202,15 @@ fn parse_seeds(lines: &mut Lines) -> Vec<SeedInterval> {
         .map(|s| s.parse::<u64>().expect("Should be a number"))
         .collect::<Vec<u64>>();
 
-    let mut intervals = Vec::new();
+    let mut seeds = Vec::new();
 
     for i in (0..numbers.len()).step_by(2) {
         let start = numbers[i];
         let range = numbers[i + 1];
-        intervals.push(SeedInterval { start, range })
+        seeds.push(start..start + range);
     }
 
-    intervals
+    seeds
 }
 
 fn parse_mapping(lines: &mut Lines) -> Mapping {
@@ -273,9 +239,8 @@ fn parse_mapping(lines: &mut Lines) -> Mapping {
             .expect("Range should be an integer");
 
         transforms.push(Transform {
-            dest_start,
-            source_start,
-            range,
+            source: source_start..source_start + range,
+            dest: dest_start..dest_start + range,
         })
     }
 
@@ -292,19 +257,7 @@ mod tests {
 
         let result = parse_seeds(&mut input.lines());
 
-        assert_eq!(
-            result,
-            vec![
-                SeedInterval {
-                    start: 79,
-                    range: 14
-                },
-                SeedInterval {
-                    start: 55,
-                    range: 13
-                }
-            ]
-        );
+        assert_eq!(result, vec![79..93, 55..68]);
     }
 
     #[test]
@@ -320,14 +273,12 @@ mod tests {
             Mapping {
                 transforms: vec![
                     Transform {
-                        dest_start: 50,
-                        source_start: 98,
-                        range: 2
+                        source: 98..100,
+                        dest: 50..52
                     },
                     Transform {
-                        dest_start: 52,
-                        source_start: 50,
-                        range: 48
+                        source: 50..98,
+                        dest: 52..100,
                     }
                 ]
             }
@@ -335,163 +286,63 @@ mod tests {
     }
 
     #[test]
-    fn transform_seed_interval_case_1() {
-        let seed_interval = SeedInterval {
-            start: 0,
-            range: 10,
-        };
-        let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
-        };
-
-        let result = transform_seed_interval(seed_interval, transform);
-
-        assert_eq!(
-            result,
-            vec![SeedInterval {
-                start: 0,
-                range: 10
-            }]
-        );
-    }
-
-    #[test]
-    fn transform_seed_interval_case_2() {
-        let seed_interval = SeedInterval {
-            start: 200,
-            range: 10,
-        };
-        let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
+    fn map_ranges_works() {
+        let inputs = vec![0..100];
+        let mapping = Mapping {
+            transforms: vec![
+                Transform {
+                    source: 40..60,
+                    dest: 240..260,
+                },
+                Transform {
+                    source: 80..120,
+                    dest: 280..320,
+                },
+            ],
         };
 
-        let result = transform_seed_interval(seed_interval, transform);
-
-        assert_eq!(
-            result,
-            vec![SeedInterval {
-                start: 100,
-                range: 10
-            }]
-        );
-    }
-
-    #[test]
-    fn transform_seed_interval_case_3() {
-        let seed_interval = SeedInterval {
-            start: 210,
-            range: 10,
-        };
-        let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
-        };
-
-        let result = transform_seed_interval(seed_interval, transform);
-
-        assert_eq!(
-            result,
-            vec![SeedInterval {
-                start: 210,
-                range: 10
-            }]
-        );
-    }
-
-    #[test]
-    fn transform_seed_interval_case_4() {
-        let seed_interval = SeedInterval {
-            start: 190,
-            range: 20,
-        };
-        let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
-        };
-
-        let result = transform_seed_interval(seed_interval, transform);
+        let result = map_ranges(inputs, &mapping);
 
         assert_eq!(
             result,
             vec![
-                SeedInterval {
-                    start: 190,
-                    range: 10
-                },
-                SeedInterval {
-                    start: 100,
-                    range: 10
-                }
+                240..260, // from 40..60
+                280..300, // from 80..100
+                60..80,   // from 60..80
+                0..40,    // from 0..40
             ]
         );
     }
 
     #[test]
-    fn transform_seed_interval_case_5() {
-        let seed_interval = SeedInterval {
-            start: 205,
-            range: 20,
-        };
+    fn map_value_works() {
         let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
+            source: 98..100,
+            dest: 50..52,
         };
 
-        let result = transform_seed_interval(seed_interval, transform);
+        let result = transform.map_value(99);
 
-        assert_eq!(
-            result,
-            vec![
-                SeedInterval {
-                    start: 105,
-                    range: 5
-                },
-                SeedInterval {
-                    start: 210,
-                    range: 15
-                }
-            ]
-        );
+        assert_eq!(result, 51);
     }
 
     #[test]
-    fn transform_seed_interval_case_6() {
-        let seed_interval = SeedInterval {
-            start: 190,
-            range: 30,
-        };
-        let transform = Transform {
-            dest_start: 100,
-            source_start: 200,
-            range: 10,
-        };
-
-        let result = transform_seed_interval(seed_interval, transform);
-
+    fn match_ranges_works() {
+        assert_eq!(match_ranges(&(0..10), &(20..30)), None);
         assert_eq!(
-            result,
-            vec![
-                SeedInterval {
-                    start: 190,
-                    range: 10
-                },
-                SeedInterval {
-                    start: 100,
-                    range: 10
-                },
-                SeedInterval {
-                    start: 210,
-                    range: 10
-                }
-            ]
+            match_ranges(&(0..10), &(5..15)),
+            Some(RangeMatch::IntersectsWith)
         );
+        assert_eq!(
+            match_ranges(&(5..15), &(0..10)),
+            Some(RangeMatch::IntersectsWith)
+        );
+        assert_eq!(match_ranges(&(10..20), &(10..20)), Some(RangeMatch::Equals));
+        assert_eq!(
+            match_ranges(&(10..20), &(0..50)),
+            Some(RangeMatch::IsInside)
+        );
+        assert_eq!(match_ranges(&(10..50), &(20..30)), Some(RangeMatch::Spans));
     }
 
     #[test]
